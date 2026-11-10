@@ -15,8 +15,8 @@ It uses the ChatGPT plan you already have. You sign in with ChatGPT in your brow
 ## Install
 
 ```bash
-git clone https://github.com/Joe-Zupo/clipscript-studio.git
-cd clipscript-studio
+git clone https://github.com/Joe-Zupo/CCLToolsHub-Public.git
+cd CCLToolsHub-Public
 pnpm prepare-app
 pnpm start
 ```
