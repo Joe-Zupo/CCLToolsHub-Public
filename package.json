@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "clipscript-studio",
+  "private": true,
+  "type": "module",
+  "prettier": "@repo/prettier-config/base",
+  "scripts": {
+    "dev": "pnpm --filter @repo/studio dev",
+    "build": "pnpm --filter @repo/studio build",
+    "prepare-app": "node scripts/studio.mjs prepare",
+    "start": "node scripts/studio.mjs start",
+    "stop": "node scripts/studio.mjs stop",
+    "status": "node scripts/studio.mjs status",
+    "update": "node scripts/studio.mjs update",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
+    "format:check": "pnpm -r --if-present format:check",
+    "format:write": "pnpm -r --if-present format:write"
+  },
+  "devDependencies": {
+    "@repo/prettier-config": "workspace:*",
+    "@typescript/native": "catalog:",
+    "prettier": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.19.0"
+}

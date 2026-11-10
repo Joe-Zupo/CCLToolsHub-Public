@@ -1,0 +1,39 @@
+packages:
+  - web/*
+  - packages/*
+
+# Scripts run without reinstalling the workspace first.
+verifyDepsBeforeRun: false
+
+catalog:
+  "@types/node": ^26.5.1
+  "@types/react": 19.3.0
+  "@types/react-dom": 19.3.0
+  # `tsc` is TypeScript 7 (native, fast typecheck). Tools that need the
+  # JavaScript compiler API (ESLint, tsdown, Next.js) get TypeScript 6 through
+  # the `typescript` alias and the override below.
+  "@typescript/native": npm:typescript@^7.0.2
+  class-variance-authority: ^0.7.1
+  clsx: ^2.1.1
+  eslint: ^10.13.0
+  lucide-react: ^1.61.0
+  next: ^16.4.3
+  prettier: ^3.9.10
+  react: 19.3.1
+  react-dom: 19.3.1
+  sonner: ^2.0.8
+  tailwind-merge: ^3.7.0
+  tailwindcss: ^4.3.3
+  tsx: ^4.23.15
+  typescript: npm:@typescript/typescript6@^6.0.2
+  zod: ^4.6.7
+
+overrides:
+  typescript: npm:@typescript/typescript6@^6.0.2
+
+allowBuilds:
+  "@tailwindcss/oxide": true
+  esbuild: true
+  ffmpeg-static: true
+  sharp: true
+  unrs-resolver: true
