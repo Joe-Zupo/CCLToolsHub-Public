@@ -3,13 +3,20 @@ import { after } from "next/server";
 import { z } from "zod";
 
 import { jsonError } from "@/lib/api";
+import { captionOptions } from "@/lib/clip-studio/clip-settings";
 import { blocked, exportClip, preflight } from "@/lib/clip-studio/pipeline";
-import { readConfig, upsertExport } from "@/lib/clip-studio/store";
+import {
+  readConfig,
+  readRetentionVideo,
+  upsertExport,
+} from "@/lib/clip-studio/store";
 import { requireJob } from "@/lib/clip-studio/viewer";
 
 const exportSchema = z.object({
   clipId: z.string().max(20),
   format: z.enum(["vertical", "original"]).default("vertical"),
+  captions: captionOptions,
+  retentionVideoId: z.uuid().nullish(),
 });
 
 /** The agent edits one picked clip, then it is rendered and stored. */
@@ -25,8 +32,16 @@ export async function POST(
     return jsonError(410, "The uploaded video was deleted. Upload it again.");
 
   const parsed = exportSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return jsonError(400, "Pick a clip.");
-  const { clipId, format } = parsed.data;
+  if (!parsed.success)
+    return jsonError(400, "Pick a clip and valid caption options.");
+  const { clipId, format, captions, retentionVideoId } = parsed.data;
+  if (retentionVideoId && format !== "vertical")
+    return jsonError(400, "Retention videos need the vertical format.");
+  const retention = retentionVideoId
+    ? await readRetentionVideo(auth.owner, retentionVideoId)
+    : null;
+  if (retentionVideoId && !retention)
+    return jsonError(400, "That retention video is gone. Pick another.");
   if (!auth.job.candidates.some((c) => c.id === clipId))
     return jsonError(400, "That clip is not in this job.");
   const current = auth.job.exports.find(
@@ -47,8 +62,10 @@ export async function POST(
 
   await upsertExport(auth.owner, id, clipId, format, {
     status: "editing",
+    captions,
+    retentionName: retention?.fileName ?? null,
     error: null,
   });
-  after(() => exportClip(auth.owner, id, clipId, format));
+  after(() => exportClip(auth.owner, id, clipId, format, captions, retention));
   return Response.json({ data: { started: true } }, { status: 202 });
 }

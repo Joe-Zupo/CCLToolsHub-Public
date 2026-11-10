@@ -6,8 +6,10 @@ import { join } from "node:path";
 import ffmpegStatic from "ffmpeg-static";
 
 import type { Word } from "./assemblyai";
+import { captionsAss, videoSize } from "./captions";
 import { env } from "./env";
-import type { ExportFormat } from "./types";
+import { retentionStartSec, splitScreenFilter } from "./split-screen";
+import type { CaptionOptions, ExportFormat } from "./types";
 
 /**
  * ffmpeg renders the finished clips. It is the static build from
@@ -16,7 +18,7 @@ import type { ExportFormat } from "./types";
 
 const ffmpeg = () => env.FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 
-/** The caption font ships in the repo, so every computer renders captions the same. */
+/** The caption fonts ship in the repo, so every computer renders captions the same. */
 const fontsDir = () => join(process.cwd(), "assets", "fonts");
 
 type Ran = { code: number | null; stderr: string };
@@ -67,40 +69,8 @@ const progressReader = (
   };
 };
 
-const srtTime = (seconds: number) => {
-  const ms = Math.max(0, Math.round(seconds * 1000));
-  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
-  return `${pad(Math.floor(ms / 3_600_000))}:${pad(Math.floor(ms / 60_000) % 60)}:${pad(Math.floor(ms / 1000) % 60)},${pad(ms % 1000, 3)}`;
-};
-
 /**
- * Burned-in captions for the clip [start, end]: a few words at a time, the
- * way short-form captions read, timed from the clip's own start.
- */
-export function captionsSrt(words: Word[], start: number, end: number): string {
-  const inClip = words.filter((w) => w.end > start && w.start < end);
-  const groups: Word[][] = [];
-  for (const word of inClip) {
-    const group = groups.at(-1);
-    const gap = group ? word.start - group.at(-1)!.end : Infinity;
-    if (!group || group.length >= 3 || gap > 0.8) groups.push([word]);
-    else group.push(word);
-  }
-  return groups
-    .map((group, i) => {
-      const from = Math.max(group[0]!.start, start) - start;
-      const to = Math.min(group.at(-1)!.end, end) - start;
-      const text = group.map((w) => w.text).join(" ");
-      return `${i + 1}\n${srtTime(from)} --> ${srtTime(to)}\n${text}\n`;
-    })
-    .join("\n");
-}
-
-const CAPTION_STYLE =
-  "FontName=DejaVu Sans,FontSize=14,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=60";
-
-/**
- * Renders one clip with captions burned in and calls `withFile` with the
+ * Renders one clip, with captions burned in if chosen, and calls `withFile` with the
  * finished MP4's path, before the temporary folder is removed. ffmpeg runs
  * inside that folder and reads the captions and font config by bare names,
  * because drive paths inside a filter graph need escaping that breaks easily.
@@ -112,31 +82,48 @@ export async function renderClip<T>(
     end: number;
     words: Word[];
     format: ExportFormat;
+    captions: CaptionOptions;
+    /** A video to loop, muted, under the clip. Vertical format only. */
+    retention?: { sourceUrl: string; durationSec: number } | null;
     onFraction: (fraction: number) => void;
   },
   withFile: (path: string) => Promise<T>
 ): Promise<T> {
-  const { sourceUrl, start, end, words, format } = options;
+  const { sourceUrl, start, end, words, format, captions } = options;
+  const retention = format === "vertical" ? options.retention : null;
   const dir = await mkdtemp(join(tmpdir(), "clip-studio-"));
   try {
-    await writeFile(join(dir, "captions.srt"), captionsSrt(words, start, end));
-    // A font config of our own, since the host may have none.
-    await writeFile(
-      join(dir, "fonts.conf"),
-      `<?xml version="1.0"?><fontconfig><dir>${fontsDir()}</dir><cachedir>${join(dir, "fontcache")}</cachedir></fontconfig>`
-    );
-    const filters = [
-      ...(format === "vertical"
+    const filters =
+      format === "vertical"
         ? [
             "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)'",
             "scale=1080:1920",
             "setsar=1",
           ]
-        : []),
-      `subtitles=captions.srt:fontsdir=fonts:force_style='${CAPTION_STYLE}'`,
-    ];
-    // `fontsdir` is relative to the folder ffmpeg runs in.
-    await cp(fontsDir(), join(dir, "fonts"), { recursive: true });
+        : [];
+    if (captions.enabled) {
+      // Text is sized to the frame it lands on, so an upright phone video in
+      // its original frame gets the same proportions as a landscape one.
+      const size =
+        format === "vertical"
+          ? { width: 1080, height: 1920 }
+          : videoSize(
+              (await run(["-hide_banner", "-i", sourceUrl], { cwd: dir }))
+                .stderr
+            );
+      await writeFile(
+        join(dir, "captions.ass"),
+        captionsAss(words, start, end, captions, size)
+      );
+      // A font config of our own, since the computer may have none.
+      await writeFile(
+        join(dir, "fonts.conf"),
+        `<?xml version="1.0"?><fontconfig><dir>${fontsDir()}</dir><cachedir>${join(dir, "fontcache")}</cachedir></fontconfig>`
+      );
+      // `fontsdir` is relative to the folder ffmpeg runs in.
+      await cp(fontsDir(), join(dir, "fonts"), { recursive: true });
+      filters.push("subtitles=captions.ass:fontsdir=fonts");
+    }
     const ran = await run(
       [
         "-y",
@@ -146,8 +133,28 @@ export async function renderClip<T>(
         end.toFixed(3),
         "-i",
         sourceUrl,
-        "-vf",
-        filters.join(","),
+        ...(retention
+          ? [
+              // Loops forever, so the output length has to be set below.
+              "-stream_loop",
+              "-1",
+              "-ss",
+              retentionStartSec(start, retention.durationSec).toFixed(3),
+              "-i",
+              retention.sourceUrl,
+              "-filter_complex",
+              splitScreenFilter(captions.enabled),
+              "-map",
+              "[out]",
+              // The clip's sound only: the retention video stays muted.
+              "-map",
+              "0:a?",
+              "-t",
+              (end - start).toFixed(3),
+            ]
+          : filters.length
+            ? ["-vf", filters.join(",")]
+            : []),
         "-c:v",
         "libx264",
         "-preset",
@@ -176,6 +183,43 @@ export async function renderClip<T>(
         `Rendering the clip failed (exit ${ran.code}): ${ran.stderr.trim().split(/\r?\n/).slice(-3).join(" ")}`
       );
     return await withFile(join(dir, "clip.mp4"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Copies a video's speech into a small audio file and calls `withFile` with
+ * it. AssemblyAI only needs the audio, so a local run uploads far less. The
+ * timings stay the same as the video's.
+ */
+export async function extractAudio<T>(
+  sourcePath: string,
+  withFile: (path: string) => Promise<T>
+): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "clip-studio-audio-"));
+  try {
+    const ran = await run(
+      [
+        "-y",
+        "-i",
+        sourcePath,
+        "-vn",
+        "-ac",
+        "1",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "audio.m4a",
+      ],
+      { cwd: dir }
+    );
+    if (ran.code !== 0)
+      throw new Error(
+        `Reading the video's audio failed (exit ${ran.code}): ${ran.stderr.trim().split(/\r?\n/).slice(-3).join(" ")}`
+      );
+    return await withFile(join(dir, "audio.m4a"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

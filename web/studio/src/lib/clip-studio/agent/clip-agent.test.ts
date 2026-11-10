@@ -125,6 +125,7 @@ describe("findClips", () => {
     const clips = await findClips(agent, {
       sentences,
       durationSec: 100,
+      minSec: 5,
       count: 2,
     });
     assert.deepEqual(
@@ -139,6 +140,52 @@ describe("findClips", () => {
       findClips(agent, { sentences, durationSec: 100 }),
       (error) => error instanceof AgentError && error.code === "no-clips"
     );
+  });
+});
+
+describe("when no clip comes out", () => {
+  const failure = async (reply: string, given: Sentence[] = sentences) => {
+    const { agent, prompts } = scripted(reply);
+    const error = await findClips(agent, {
+      sentences: given,
+      durationSec: 100,
+      minSec: 30,
+      maxSec: 45,
+    }).then(
+      () => assert.fail("expected no clips"),
+      (caught: AgentError) => caught
+    );
+    assert.equal(error.code, "no-clips");
+    return { error, prompts };
+  };
+
+  it("says none fit the length, without the agent's raw answer", async () => {
+    const { error } = await failure(
+      JSON.stringify({ clips: [clip(0, 3), clip(40, 41)] })
+    );
+    assert.match(error.message, /2 clips/);
+    assert.match(error.message, /30 sec to 45 sec/);
+    assert.ok(!error.message.includes("{"));
+    assert.ok(error.detail?.includes('"clips"'));
+  });
+
+  it("says when the agent found nothing worth clipping", async () => {
+    const { error } = await failure(JSON.stringify({ clips: [] }));
+    assert.match(error.message, /found no strong moments/);
+    assert.ok(!error.message.includes("{"));
+  });
+
+  it("says when the answer could not be read", async () => {
+    const { error } = await failure("I could not find anything.");
+    assert.match(error.message, /Try again/);
+    assert.ok(!error.message.includes("could not find anything"));
+    assert.equal(error.detail, "I could not find anything.");
+  });
+
+  it("does not ask the agent about a video with no speech", async () => {
+    const { error, prompts } = await failure("{}", []);
+    assert.match(error.message, /no speech/i);
+    assert.equal(prompts.length, 0);
   });
 });
 
@@ -212,5 +259,173 @@ describe("checkBudget", () => {
     const result = checkBudget(agent, "x".repeat(10_000));
     assert.equal(result.ok, false);
     assert.match(!result.ok ? result.message : "", /too long/i);
+  });
+});
+
+describe("clip length", () => {
+  // 40 ten-second sentences: 0-10 ... 390-400.
+  const long: Sentence[] = Array.from({ length: 40 }, (_, i) => ({
+    start: i * 10,
+    end: i * 10 + 10,
+    text: `Sentence number ${i}.`,
+  }));
+
+  it("tells the agent the chosen length", async () => {
+    const { agent, prompts } = scripted(
+      JSON.stringify({ clips: [clip(0, 60)] })
+    );
+    await findClips(agent, {
+      sentences: long,
+      durationSec: 400,
+      minSec: 45,
+      maxSec: 120,
+    });
+    assert.match(prompts[0]!.prompt, /45-120 seconds/);
+  });
+
+  it("drops clips under the minimum", async () => {
+    const { agent } = scripted(
+      JSON.stringify({ clips: [clip(0, 10), clip(100, 160, 9, "Long enough")] })
+    );
+    const clips = await findClips(agent, {
+      sentences: long,
+      durationSec: 400,
+      minSec: 30,
+      maxSec: 90,
+    });
+    assert.deepEqual(
+      clips.map((c) => c.title),
+      ["Long enough"]
+    );
+  });
+
+  it("grows a slightly short clip by whole neighbouring sentences", async () => {
+    const { agent } = scripted(JSON.stringify({ clips: [clip(0, 20)] }));
+    const [only] = await findClips(agent, {
+      sentences: long,
+      durationSec: 400,
+      minSec: 30,
+      maxSec: 45,
+    });
+    assert.deepEqual([only!.start, only!.end], [0, 30]);
+  });
+
+  it("grows backwards when the video has no sentences left after the clip", async () => {
+    const { agent } = scripted(JSON.stringify({ clips: [clip(380, 400)] }));
+    const [only] = await findClips(agent, {
+      sentences: long,
+      durationSec: 400,
+      minSec: 30,
+      maxSec: 45,
+    });
+    assert.deepEqual([only!.start, only!.end], [370, 400]);
+  });
+
+  it("keeps a clip just under the minimum when no sentence fits to grow it", async () => {
+    // The clip this came from: 29.8 seconds against a 30-second minimum.
+    const tight: Sentence[] = [
+      { start: 241.4, end: 271.2, text: "What's my dream in life?" },
+      { start: 271.2, end: 340, text: "A long answer." },
+    ];
+    const { agent } = scripted(JSON.stringify({ clips: [clip(241.4, 271.2)] }));
+    const [only] = await findClips(agent, {
+      sentences: tight,
+      durationSec: 340,
+      minSec: 30,
+      maxSec: 45,
+    });
+    assert.deepEqual([only!.start, only!.end], [241.4, 271.2]);
+  });
+
+  it("keeps a clip just over the maximum when trimming would ruin it", async () => {
+    const tight: Sentence[] = [{ start: 0, end: 46.5, text: "One long take." }];
+    const { agent } = scripted(JSON.stringify({ clips: [clip(0, 46.5)] }));
+    const [only] = await findClips(agent, {
+      sentences: tight,
+      durationSec: 46.5,
+      minSec: 30,
+      maxSec: 45,
+    });
+    assert.equal(only!.end, 46.5);
+  });
+
+  it("trims a clip over the maximum back to a sentence end", async () => {
+    const { agent } = scripted(JSON.stringify({ clips: [clip(0, 300)] }));
+    const [only] = await findClips(agent, {
+      sentences: long,
+      durationSec: 400,
+      minSec: 30,
+      maxSec: 95,
+    });
+    assert.equal(only!.start, 0);
+    assert.equal(only!.end, 90);
+  });
+
+  it("drops an over-long clip when trimming would leave too little", async () => {
+    // One 200-second sentence: no sentence end falls inside the maximum.
+    const sparse: Sentence[] = [
+      { start: 0, end: 200, text: "A very long sentence." },
+      { start: 200, end: 260, text: "A shorter one." },
+    ];
+    const { agent } = scripted(
+      JSON.stringify({ clips: [clip(0, 200), clip(200, 260, 5, "Fits")] })
+    );
+    const clips = await findClips(agent, {
+      sentences: sparse,
+      durationSec: 260,
+      minSec: 30,
+      maxSec: 180,
+    });
+    assert.deepEqual(
+      clips.map((c) => c.title),
+      ["Fits"]
+    );
+  });
+
+  it("says so without asking the agent when the video is too short", async () => {
+    const { agent, prompts } = scripted("{}");
+    await assert.rejects(
+      findClips(agent, { sentences, durationSec: 20, minSec: 30, maxSec: 90 }),
+      (error: AgentError) =>
+        error.code === "no-clips" && /shorter than/.test(error.message)
+    );
+    assert.equal(prompts.length, 0);
+  });
+
+  it("keeps an edit inside the chosen length", async () => {
+    const pick = {
+      id: "a",
+      start: 100,
+      end: 160,
+      title: "T",
+      hook: "H",
+      reason: "R",
+      score: 5,
+    };
+    const tooShort = scripted(
+      JSON.stringify({ start: 110, end: 120, title: "New", caption: "Cap" })
+    );
+    const short = await planClipEdit(tooShort.agent, {
+      candidate: pick,
+      sentences: long,
+      durationSec: 400,
+      minSec: 30,
+      maxSec: 180,
+    });
+    assert.deepEqual([short.start, short.end], [100, 160]);
+    assert.equal(short.title, "T");
+
+    const tooLong = scripted(
+      JSON.stringify({ start: 90, end: 170, title: "New", caption: "Cap" })
+    );
+    const trimmed = await planClipEdit(tooLong.agent, {
+      candidate: pick,
+      sentences: long,
+      durationSec: 400,
+      minSec: 30,
+      maxSec: 60,
+    });
+    assert.ok(trimmed.end - trimmed.start <= 60);
+    assert.match(tooLong.prompts[0]!.prompt, /30-60 seconds/);
   });
 });

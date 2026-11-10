@@ -38,6 +38,27 @@ const newJob = (owner: Owner, name: string) =>
     durationSec: 120,
   });
 
+describe("retention videos", () => {
+  it("belong to one owner and are removed with their data", async () => {
+    const owner: Owner = { installationId: "inst_r", sub: "member_rita" };
+    const other: Owner = { installationId: "inst_r", sub: "member_sam" };
+    const video = await store.addRetentionVideo(owner, {
+      fileName: "game.mp4",
+      url: "uploads/game.mp4",
+      durationSec: 60,
+    });
+    assert.equal((await store.listRetentionVideos(other)).length, 0);
+    assert.equal(await store.readRetentionVideo(other, video.id), null);
+    assert.equal(await store.deleteRetentionVideo(other, video.id), null);
+    assert.equal(
+      (await store.readRetentionVideo(owner, video.id))?.id,
+      video.id
+    );
+    assert.deepEqual(await store.deleteOwnerData(owner), ["uploads/game.mp4"]);
+    assert.equal((await store.listRetentionVideos(owner)).length, 0);
+  });
+});
+
 describe("after the studio restarts", () => {
   it("frees work that was running when it closed", async () => {
     const { recoverInterrupted } = await import("./store-core");

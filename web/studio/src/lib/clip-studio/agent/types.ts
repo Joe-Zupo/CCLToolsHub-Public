@@ -25,7 +25,9 @@ export type AgentErrorCode =
 export class AgentError extends Error {
   constructor(
     readonly code: AgentErrorCode,
-    message: string
+    message: string,
+    /** What went wrong in technical terms, for the server log. Never shown on the page. */
+    readonly detail?: string
   ) {
     super(message);
     this.name = "AgentError";

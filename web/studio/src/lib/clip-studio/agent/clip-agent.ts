@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
+import { lengthLabel } from "../types";
 import { AgentError, type Agent, type Readiness } from "./types";
 
 /**
@@ -96,6 +97,53 @@ function snap(
     : null;
 }
 
+/** Sentences rarely end on the exact second, so a cut may miss by this much. */
+const LENGTH_GRACE_SEC = 2;
+
+/**
+ * Holds a cut to the chosen length, always on sentence boundaries. One over the
+ * maximum ends at the last sentence that fits. One under the minimum grows by
+ * whole neighbouring sentences, if the agent asked for at least half the
+ * minimum (`askedSec`, before snapping).
+ * Null when it still misses the range by more than `LENGTH_GRACE_SEC`.
+ */
+function fitLength(
+  bounds: { start: number; end: number },
+  askedSec: number,
+  sentences: Sentence[],
+  minSec: number,
+  maxSec: number
+): { start: number; end: number } | null {
+  const length = ({ start, end }: { start: number; end: number }) =>
+    end - start;
+  let cut = bounds;
+  if (length(cut) > maxSec) {
+    const latest = cut.start + maxSec;
+    const end = sentences.length
+      ? sentences.filter((s) => s.end > cut.start && s.end <= latest).at(-1)
+          ?.end
+      : latest;
+    if (end !== undefined && end - cut.start >= minSec - LENGTH_GRACE_SEC)
+      cut = { start: cut.start, end };
+  }
+  if (length(cut) < minSec && askedSec >= minSec / 2) {
+    for (const next of sentences.filter((s) => s.start >= cut.end)) {
+      if (length(cut) >= minSec || next.end - cut.start > maxSec) break;
+      cut = { start: cut.start, end: next.end };
+    }
+    for (const previous of sentences
+      .filter((s) => s.end <= cut.start)
+      .reverse()) {
+      if (length(cut) >= minSec || cut.end - previous.start > maxSec) break;
+      cut = { start: previous.start, end: cut.end };
+    }
+  }
+  return length(cut) >= minSec - LENGTH_GRACE_SEC &&
+    length(cut) <= maxSec + LENGTH_GRACE_SEC
+    ? cut
+    : null;
+}
+
 const overlap = (a: ClipCandidate, b: ClipCandidate) => {
   const shared = Math.min(a.end, b.end) - Math.max(a.start, b.start);
   return shared / Math.min(a.end - a.start, b.end - b.start);
@@ -111,7 +159,7 @@ const rawClip = z.object({
 });
 
 const CLIP_SYSTEM =
-  "You are a short-form video editor. You find the moments in long videos that stand alone as gripping 15-90 second clips for TikTok, Reels and Shorts. You answer with JSON only.";
+  "You are a short-form video editor. You find the moments in long videos that stand alone as gripping clips for TikTok, Reels and Shorts. You answer with JSON only.";
 
 export async function findClips(
   agent: Agent,
@@ -119,8 +167,8 @@ export async function findClips(
     sentences,
     durationSec,
     count = 5,
-    minSec = 15,
-    maxSec = 90,
+    minSec = 30,
+    maxSec = 180,
   }: {
     sentences: Sentence[];
     durationSec: number;
@@ -129,6 +177,16 @@ export async function findClips(
     maxSec?: number;
   }
 ): Promise<ClipCandidate[]> {
+  if (durationSec < minSec)
+    throw new AgentError(
+      "no-clips",
+      `This video is ${Math.round(durationSec)} seconds long, shorter than the ${minSec}-second clips you asked for. Choose a shorter clip length.`
+    );
+  if (sentences.length === 0)
+    throw new AgentError(
+      "no-clips",
+      "There is no speech in this video, so there is nothing to make clips from."
+    );
   const prompt = [
     `Below is the transcript of a ${Math.round(durationSec)}-second video, one sentence per line, each with its start and end time in seconds.`,
     `Pick up to ${count} clips most likely to do well as standalone short videos. Each clip must be ${minSec}-${maxSec} seconds, start at the start of a sentence, end at the end of a sentence, make sense without the rest of the video, and open with a strong hook. Clips must not overlap.`,
@@ -157,11 +215,20 @@ export async function findClips(
       0,
       durationSec
     );
-    if (!bounds || bounds.end - bounds.start < minSec) continue;
+    const fitted =
+      bounds &&
+      fitLength(
+        bounds,
+        parsed.data.end - parsed.data.start,
+        sentences,
+        minSec,
+        maxSec
+      );
+    if (!fitted) continue;
     candidates.push({
       id: randomUUID().slice(0, 8),
       ...parsed.data,
-      ...bounds,
+      ...fitted,
     });
   }
 
@@ -171,11 +238,19 @@ export async function findClips(
     if (kept.every((other) => overlap(candidate, other) <= 0.5))
       kept.push(candidate);
   }
-  if (kept.length === 0)
+  if (kept.length === 0) {
+    const range = `${lengthLabel(minSec)} to ${lengthLabel(maxSec)}`;
+    const suggested = Array.isArray(list) ? list.length : null;
     throw new AgentError(
       "no-clips",
-      `${agent.label} did not return any usable clips. It said: ${text.slice(0, 300)}`
+      suggested === null
+        ? `${agent.label}'s answer could not be read. Try again.`
+        : suggested === 0
+          ? `${agent.label} found no strong moments for clips of ${range}. Try a different clip length.`
+          : `${agent.label} suggested ${suggested} ${suggested === 1 ? "clip" : "clips"}, but none could be cut to ${range}. Try a wider clip length.`,
+      text.slice(0, 2000)
     );
+  }
   return kept.sort((a, b) => a.start - b.start);
 }
 
@@ -194,8 +269,8 @@ const EDIT_SYSTEM =
 
 /**
  * Asks the Agent to finish one picked clip: a tighter cut, a title and a post
- * caption. The cut may move at most `EDIT_SLACK_SEC` from the pick and is
- * pinned to sentence boundaries. Anything unusable falls back to the pick
+ * caption. The cut may move at most `EDIT_SLACK_SEC` from the pick, is pinned
+ * to sentence boundaries and stays within the chosen length. Anything unusable falls back to the pick
  * itself, so exporting never fails because the Agent rambled.
  */
 export async function planClipEdit(
@@ -204,7 +279,15 @@ export async function planClipEdit(
     candidate,
     sentences,
     durationSec,
-  }: { candidate: ClipCandidate; sentences: Sentence[]; durationSec: number }
+    minSec = 3,
+    maxSec = Infinity,
+  }: {
+    candidate: ClipCandidate;
+    sentences: Sentence[];
+    durationSec: number;
+    minSec?: number;
+    maxSec?: number;
+  }
 ): Promise<ClipEdit> {
   const low = Math.max(0, candidate.start - EDIT_SLACK_SEC);
   const high = Math.min(durationSec, candidate.end + EDIT_SLACK_SEC);
@@ -218,7 +301,7 @@ export async function planClipEdit(
 
   const prompt = [
     `A clip was picked from ${stamp(candidate.start)}s to ${stamp(candidate.end)}s, titled "${candidate.title}".`,
-    `You may move its start and end by up to ${EDIT_SLACK_SEC} seconds to tighten it: cut slow openings, end on a strong line. Start at a sentence start and end at a sentence end.`,
+    `You may move its start and end by up to ${EDIT_SLACK_SEC} seconds to tighten it: cut slow openings, end on a strong line. Start at a sentence start and end at a sentence end.${Number.isFinite(maxSec) ? ` The clip must stay ${minSec}-${maxSec} seconds long.` : ""}`,
     'Write a title (under 70 characters, shown on screen) and a caption for the post (1-3 short sentences plus 3-5 hashtags), in the same language as the transcript. Answer with JSON only: {"start":0,"end":0,"title":"","caption":""}.',
     "",
     "TRANSCRIPT AROUND THE CLIP",
@@ -235,6 +318,15 @@ export async function planClipEdit(
   const parsed = rawEdit.safeParse(extractJson(text));
   if (!parsed.success) return fallback;
   const bounds = snap(parsed.data.start, parsed.data.end, sentences, low, high);
-  if (!bounds || bounds.end - bounds.start < 3) return fallback;
-  return { ...bounds, title: parsed.data.title, caption: parsed.data.caption };
+  const fitted =
+    bounds &&
+    fitLength(
+      bounds,
+      parsed.data.end - parsed.data.start,
+      sentences.filter((s) => s.start >= low && s.end <= high),
+      minSec,
+      maxSec
+    );
+  if (!fitted) return fallback;
+  return { ...fitted, title: parsed.data.title, caption: parsed.data.caption };
 }

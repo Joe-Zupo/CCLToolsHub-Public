@@ -1,6 +1,6 @@
 import { copyFile } from "node:fs/promises";
 
-import { agentFor } from "./agent";
+import { AgentError, agentFor } from "./agent";
 import { checkBudget, findClips, planClipEdit } from "./agent/clip-agent";
 import {
   assemblyAiReady,
@@ -8,7 +8,8 @@ import {
   startTranscript,
   uploadMedia,
 } from "./assemblyai";
-import { ffmpegWorks, renderClip } from "./ffmpeg";
+import { explainFailure, type FailedStep } from "./errors";
+import { extractAudio, ffmpegWorks, renderClip } from "./ffmpeg";
 import { exportName, mediaPath, removeMedia, prepareMediaFile } from "./media";
 import {
   exportUrl,
@@ -21,11 +22,14 @@ import {
   type Transcript,
 } from "./store";
 import type {
+  CaptionOptions,
   ClipCandidateJson,
+  ClipSettings,
   ExportFormat,
   PreflightJson,
   Progress,
   Readiness,
+  RetentionVideoJson,
   ServiceId,
 } from "./types";
 
@@ -69,20 +73,29 @@ export const blocked = (result: Partial<PreflightJson>) =>
       readiness !== undefined && !readiness.ok
   )?.message ?? null;
 
-const message = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+/** The sentence for the page; the technical text stays in the server log. */
+const explained = (error: unknown, step: FailedStep) => {
+  console.error(
+    `[clip-studio] ${step} failed:`,
+    error instanceof AgentError && error.detail ? error.detail : error
+  );
+  return explainFailure(error, step);
+};
 
 export async function startTranscription(
   owner: Owner,
   jobId: string,
-  clipCount: number
+  settings: ClipSettings
 ): Promise<void> {
   const config = await readConfig(owner);
   const job = await readJobRow(owner, jobId);
   if (!job) return;
   const transcriptId = await startTranscript(
     config.assemblyAiKey,
-    await uploadMedia(config.assemblyAiKey, mediaPath(job.sourceUrl))
+    // Only the sound goes up, which is far smaller and all it needs.
+    await extractAudio(mediaPath(job.sourceUrl), (path) =>
+      uploadMedia(config.assemblyAiKey, path)
+    )
   );
   const progress: Progress = {
     stage: "transcribing",
@@ -92,7 +105,9 @@ export async function startTranscription(
   await updateJob(owner, jobId, {
     status: "transcribing",
     transcriptId,
-    clipCount,
+    clipCount: settings.clipCount,
+    clipMinSec: settings.minSec,
+    clipMaxSec: settings.maxSec,
     progress,
     error: null,
   });
@@ -113,7 +128,7 @@ export async function refreshTranscription(
   const state = await checkTranscript(config.assemblyAiKey, job.transcriptId);
 
   if (state.status === "error") {
-    const error = `Transcription failed: ${state.error}`;
+    const error = explained(new Error(state.error), "transcribe");
     await updateJob(owner, jobId, { status: "failed", error, progress: null }, [
       "transcribing",
     ]);
@@ -149,7 +164,7 @@ export async function refreshTranscription(
 export async function claimAnalysis(
   owner: Owner,
   jobId: string,
-  clipCount: number
+  settings: ClipSettings
 ): Promise<(() => Promise<void>) | null> {
   const progress: Progress = {
     stage: "analyzing",
@@ -159,7 +174,14 @@ export async function claimAnalysis(
   const won = await updateJob(
     owner,
     jobId,
-    { status: "analyzing", clipCount, progress, error: null },
+    {
+      status: "analyzing",
+      clipCount: settings.clipCount,
+      clipMinSec: settings.minSec,
+      clipMaxSec: settings.maxSec,
+      progress,
+      error: null,
+    },
     ["transcribed", "analyzed"]
   );
   return won ? () => analyze(owner, jobId) : null;
@@ -194,6 +216,8 @@ async function analyze(owner: Owner, jobId: string): Promise<void> {
       sentences: transcript.sentences,
       durationSec: job.durationSec,
       count: job.clipCount,
+      minSec: job.clipMinSec,
+      maxSec: job.clipMaxSec,
     });
     const progress: Progress = {
       stage: "analyzed",
@@ -210,7 +234,7 @@ async function analyze(owner: Owner, jobId: string): Promise<void> {
       error: null,
     });
   } catch (error) {
-    await fail(`Finding clips failed: ${message(error)}`);
+    await fail(explained(error, "find-clips"));
   }
 }
 
@@ -222,7 +246,9 @@ export async function exportClip(
   owner: Owner,
   jobId: string,
   clipId: string,
-  format: ExportFormat
+  format: ExportFormat,
+  captions: CaptionOptions,
+  retention: RetentionVideoJson | null = null
 ): Promise<void> {
   const job = await readJobRow(owner, jobId);
   const transcript = job?.transcript as Transcript | null;
@@ -244,6 +270,8 @@ export async function exportClip(
       candidate,
       sentences: transcript.sentences,
       durationSec: job.durationSec,
+      minSec: job.clipMinSec,
+      maxSec: job.clipMaxSec,
     });
     await upsertExport(owner, jobId, clipId, format, {
       status: "rendering",
@@ -263,6 +291,11 @@ export async function exportClip(
         end: edit.end,
         words: transcript.words,
         format,
+        captions,
+        retention: retention && {
+          sourceUrl: mediaPath(retention.url),
+          durationSec: retention.durationSec,
+        },
         onFraction: (fraction) =>
           void tell({
             stage: "rendering",
@@ -288,10 +321,11 @@ export async function exportClip(
       message: `"${edit.title}" is ready`,
     });
   } catch (error) {
+    const reason = explained(error, "export");
     await upsertExport(owner, jobId, clipId, format, {
       status: "failed",
-      error: message(error),
+      error: reason,
     });
-    await tell(null, `Exporting a clip failed: ${message(error)}`);
+    await tell(null, reason);
   }
 }

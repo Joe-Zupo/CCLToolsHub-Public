@@ -1,9 +1,16 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
+import { extname } from "node:path";
 import { Readable } from "node:stream";
 
 import { jsonError } from "@/lib/api";
 import { mediaPath } from "@/lib/clip-studio/media";
+
+const TYPES: Record<string, string> = {
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+};
 
 const stream = (path: string, range?: { start: number; end: number }) =>
   Readable.toWeb(createReadStream(path, range)) as ReadableStream;
@@ -25,7 +32,7 @@ export async function GET(
 
   const headers = {
     "Accept-Ranges": "bytes",
-    "Content-Type": "video/mp4",
+    "Content-Type": TYPES[extname(path).toLowerCase()] ?? "video/mp4",
     "Cache-Control": "no-store",
   };
   const match = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("range") ?? "");

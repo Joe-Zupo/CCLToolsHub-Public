@@ -9,6 +9,7 @@ import type { Sentence } from "./agent/clip-agent";
 import type { Word } from "./assemblyai";
 import { decrypt, encrypt } from "./crypto";
 import type {
+  CaptionOptions,
   ClipCandidateJson,
   ClipExportJson,
   ConfigJson,
@@ -18,6 +19,7 @@ import type {
   JobJson,
   JobStatus,
   Progress,
+  RetentionVideoJson,
 } from "./types";
 
 /**
@@ -27,7 +29,12 @@ import type {
  * Built by a factory so the tests can run it against an in-memory database.
  */
 
-const { clipStudioConfigs, clipStudioExports, clipStudioJobs } = schema;
+const {
+  clipStudioConfigs,
+  clipStudioExports,
+  clipStudioJobs,
+  clipStudioRetentionVideos,
+} = schema;
 
 export type ClipDb = PgDatabase<PgQueryResultHKT, typeof schema>;
 
@@ -54,6 +61,8 @@ export type JobPatch = Partial<
     | "candidates"
     | "durationSec"
     | "clipCount"
+    | "clipMinSec"
+    | "clipMaxSec"
   >
 >;
 
@@ -93,6 +102,8 @@ const exportJson = (row: ExportRow): ClipExportJson => ({
   end: row.end,
   title: row.title,
   caption: row.caption,
+  captions: (row.captions as CaptionOptions | null) ?? null,
+  retentionName: row.retentionName,
   url: row.url,
   error: row.error,
 });
@@ -104,11 +115,23 @@ const jobJson = (row: JobRow, exports: ExportRow[]): JobJson => ({
   createdAt: row.createdAt.toISOString(),
   durationSec: row.durationSec,
   clipCount: row.clipCount,
+  clipMinSec: row.clipMinSec,
+  clipMaxSec: row.clipMaxSec,
   status: row.status as JobStatus,
   progress: (row.progress as Progress | null) ?? null,
   error: row.error,
   candidates: row.candidates as ClipCandidateJson[],
   exports: exports.map(exportJson),
+});
+
+const retentionJson = (
+  row: typeof clipStudioRetentionVideos.$inferSelect
+): RetentionVideoJson => ({
+  id: row.id,
+  fileName: row.fileName,
+  durationSec: row.durationSec,
+  url: row.url,
+  createdAt: row.createdAt.toISOString(),
 });
 
 const keep = (next: string | undefined, current: string) =>
@@ -256,6 +279,58 @@ export function createClipStore(db: ClipDb) {
     return updated.length > 0;
   }
 
+  const ownerRetention = (owner: Owner) =>
+    and(
+      eq(clipStudioRetentionVideos.installationId, owner.installationId),
+      eq(clipStudioRetentionVideos.sub, owner.sub)
+    );
+
+  async function addRetentionVideo(
+    owner: Owner,
+    video: Pick<RetentionVideoJson, "fileName" | "url" | "durationSec">
+  ): Promise<RetentionVideoJson> {
+    const [row] = await db
+      .insert(clipStudioRetentionVideos)
+      .values({ ...owner, ...video })
+      .returning();
+    return retentionJson(row!);
+  }
+
+  async function listRetentionVideos(
+    owner: Owner
+  ): Promise<RetentionVideoJson[]> {
+    const rows = await db
+      .select()
+      .from(clipStudioRetentionVideos)
+      .where(ownerRetention(owner))
+      .orderBy(desc(clipStudioRetentionVideos.createdAt));
+    return rows.map(retentionJson);
+  }
+
+  async function readRetentionVideo(
+    owner: Owner,
+    id: string
+  ): Promise<RetentionVideoJson | null> {
+    const [row] = await db
+      .select()
+      .from(clipStudioRetentionVideos)
+      .where(and(ownerRetention(owner), eq(clipStudioRetentionVideos.id, id)))
+      .limit(1);
+    return row ? retentionJson(row) : null;
+  }
+
+  /** Deletes one of the owner's retention videos; returns its file name, or null. */
+  async function deleteRetentionVideo(
+    owner: Owner,
+    id: string
+  ): Promise<string | null> {
+    const [row] = await db
+      .delete(clipStudioRetentionVideos)
+      .where(and(ownerRetention(owner), eq(clipStudioRetentionVideos.id, id)))
+      .returning({ url: clipStudioRetentionVideos.url });
+    return row?.url ?? null;
+  }
+
   /** Deletes one of the owner's jobs and its clips; returns the blob URLs to remove. */
   async function deleteJob(owner: Owner, jobId: string): Promise<string[]> {
     const row = await readJobRow(owner, jobId);
@@ -342,7 +417,12 @@ export function createClipStore(db: ClipDb) {
         )
       );
     await db.delete(clipStudioConfigs).where(ownerConfig(owner));
+    const retention = await db
+      .delete(clipStudioRetentionVideos)
+      .where(ownerRetention(owner))
+      .returning({ url: clipStudioRetentionVideos.url });
     return [
+      ...retention.map((video) => video.url),
       ...jobs.map((j) => j.url),
       ...exports.flatMap((e) => (e.url ? [e.url] : [])),
     ];
@@ -357,6 +437,10 @@ export function createClipStore(db: ClipDb) {
     readJob,
     listJobs,
     updateJob,
+    addRetentionVideo,
+    listRetentionVideos,
+    readRetentionVideo,
+    deleteRetentionVideo,
     deleteJob,
     upsertExport,
     exportUrl,

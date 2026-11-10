@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 
 import { readError } from "@/lib/api";
-import type { JobJson } from "@/lib/clip-studio/types";
+import type { JobJson, RetentionVideoJson } from "@/lib/clip-studio/types";
 
 /** JSON calls to the Clip Studio API, throwing the server's error message. */
 export function useClipApi() {
@@ -60,20 +60,36 @@ const sendFile = (file: File, onProgress: (fraction: number) => void) =>
     request.send(file);
   });
 
+const saveFile = async (file: File, onProgress: (fraction: number) => void) => {
+  const [durationSec, name] = await Promise.all([
+    readDuration(file),
+    sendFile(file, onProgress),
+  ]);
+  return { name, fileName: file.name, durationSec };
+};
+
 /** Saves a video to this computer, then registers it as a job. */
 export function useUploadVideo() {
   const api = useClipApi();
   return useCallback(
-    async (file: File, onProgress: (fraction: number) => void) => {
-      const [durationSec, name] = await Promise.all([
-        readDuration(file),
-        sendFile(file, onProgress),
-      ]);
-      return api<JobJson>("/api/clip-studio/jobs", {
+    async (file: File, onProgress: (fraction: number) => void) =>
+      api<JobJson>("/api/clip-studio/jobs", {
         method: "POST",
-        body: JSON.stringify({ name, fileName: file.name, durationSec }),
-      });
-    },
+        body: JSON.stringify(await saveFile(file, onProgress)),
+      }),
+    [api]
+  );
+}
+
+/** Saves a video to this computer and adds it to the retention videos. */
+export function useUploadRetentionVideo() {
+  const api = useClipApi();
+  return useCallback(
+    async (file: File, onProgress: (fraction: number) => void) =>
+      api<RetentionVideoJson>("/api/clip-studio/retention", {
+        method: "POST",
+        body: JSON.stringify(await saveFile(file, onProgress)),
+      }),
     [api]
   );
 }

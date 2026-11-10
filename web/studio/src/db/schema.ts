@@ -7,6 +7,7 @@ import {
   real,
   text,
   timestamp,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -40,6 +41,9 @@ export const clipStudioJobs = pgTable(
     durationSec: real("duration_sec").notNull(),
     /** How many clips the member asked for, 1-5. */
     clipCount: integer("clip_count").notNull().default(5),
+    /** Shortest and longest clip asked for, in seconds. */
+    clipMinSec: integer("clip_min_sec").notNull().default(30),
+    clipMaxSec: integer("clip_max_sec").notNull().default(90),
     status: text("status").notNull(),
     progress: jsonb("progress"),
     error: text("error"),
@@ -74,6 +78,10 @@ export const clipStudioExports = pgTable(
     end: real("end"),
     title: text("title"),
     caption: text("caption"),
+    /** The caption options it was rendered with. */
+    captions: jsonb("captions"),
+    /** The retention video playing under the clip, by file name. */
+    retentionName: text("retention_name"),
     url: text("url"),
     error: text("error"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
@@ -82,5 +90,27 @@ export const clipStudioExports = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.jobId, table.clipId, table.format] }),
+  ]
+);
+
+/** The Creator's video to play under clips, such as gameplay. Muted and looped. */
+export const clipStudioRetentionVideos = pgTable(
+  "clip_studio_retention_videos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: text("installation_id").notNull(),
+    sub: text("sub").notNull(),
+    fileName: text("file_name").notNull(),
+    url: text("url").notNull(),
+    durationSec: real("duration_sec").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("clip_studio_retention_owner_idx").on(
+      table.installationId,
+      table.sub
+    ),
   ]
 );

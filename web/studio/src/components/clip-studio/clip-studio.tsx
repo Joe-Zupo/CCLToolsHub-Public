@@ -20,10 +20,14 @@ import { Progress } from "@repo/ui/components/progress";
 import { TooltipProvider } from "@repo/ui/components/tooltip";
 import { cn } from "@repo/ui/lib/utils";
 
-import type { ConfigJson, JobJson } from "@/lib/clip-studio/types";
+import type {
+  ClipSettings,
+  ConfigJson,
+  JobJson,
+} from "@/lib/clip-studio/types";
 
-import { ClipCountSelect, useClipCount } from "./clip-count";
-import { clock, JobView } from "./job-view";
+import { ClipSettingsFields, useClipSettings } from "./clip-settings";
+import { clock, JobView, STATUS_LABEL } from "./job-view";
 import { useClipApi, useUploadVideo } from "./use-clip-api";
 
 const configured = (config: ConfigJson) => config.hasAssemblyAiKey;
@@ -43,10 +47,10 @@ const greeting = () => {
  */
 /** Top navigation; the active pill slides between tabs. */
 function UploadTile({
-  clipCount,
+  settings,
   onUploaded,
 }: {
-  clipCount: number;
+  settings: ClipSettings;
   onUploaded: (job: JobJson) => void;
 }) {
   const upload = useUploadVideo();
@@ -63,7 +67,7 @@ function UploadTile({
       try {
         await api(`/api/clip-studio/jobs/${job.id}/transcribe`, {
           method: "POST",
-          body: JSON.stringify({ clipCount }),
+          body: JSON.stringify(settings),
         });
       } catch (error) {
         toast.error(error instanceof Error ? error.message : String(error));
@@ -125,7 +129,7 @@ function StudioPanel({ config }: { config: ConfigJson }) {
   const api = useClipApi();
   const [jobs, setJobs] = useState<JobJson[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [clipCount, setClipCount] = useClipCount();
+  const [settings, setSettings] = useClipSettings();
 
   const loadJobs = useCallback(async () => {
     try {
@@ -170,14 +174,17 @@ function StudioPanel({ config }: { config: ConfigJson }) {
               Upload once: it is transcribed, then the agent picks the best
               moments.
             </CardDescription>
-            <div className="flex items-center gap-2 pt-2 text-sm">
-              <span className="text-muted-foreground">Find up to</span>
-              <ClipCountSelect value={clipCount} onChange={setClipCount} />
-            </div>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <ClipSettingsFields
+                idPrefix="new"
+                value={settings}
+                onChange={setSettings}
+              />
+            </div>
             <UploadTile
-              clipCount={clipCount}
+              settings={settings}
               onUploaded={(job) => {
                 setSelected(job.id);
                 void loadJobs();
@@ -236,7 +243,7 @@ function StudioPanel({ config }: { config: ConfigJson }) {
                           job.status === "failed" ? "destructive" : "outline"
                         }
                       >
-                        {job.status}
+                        {STATUS_LABEL[job.status]}
                       </Badge>
                     </button>
                     <Button
@@ -286,7 +293,7 @@ export function ClipStudio() {
               {config?.displayName || "Creator"}
             </p>
             <p className="text-muted-foreground mt-1 max-w-2xl text-sm">
-              Turn one long video into five short clips with captions and
+              Turn one long video into up to five short clips with captions and
               titles. Upload, pick the moments you like, and the agent edits
               them for you.
             </p>

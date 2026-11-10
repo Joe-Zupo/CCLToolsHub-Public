@@ -33,14 +33,18 @@ import {
 } from "@repo/ui/components/select";
 import { cn } from "@repo/ui/lib/utils";
 
-import type {
-  ClipExportJson,
-  ConfigJson,
-  ExportFormat,
-  JobJson,
+import {
+  CAPTION_FONTS,
+  CAPTION_POSITIONS,
+  type ClipExportJson,
+  type ConfigJson,
+  type ExportFormat,
+  type JobJson,
 } from "@/lib/clip-studio/types";
 
-import { ClipCountSelect, useClipCount } from "./clip-count";
+import { CaptionSettings, useCaptionOptions } from "./caption-settings";
+import { ClipSettingsFields, useClipSettings } from "./clip-settings";
+import { RetentionSettings, useRetentionChoice } from "./retention-settings";
 import { useClipApi } from "./use-clip-api";
 
 export const clock = (seconds: number) => {
@@ -51,7 +55,7 @@ export const clock = (seconds: number) => {
   return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
 };
 
-const STATUS_LABEL: Record<JobJson["status"], string> = {
+export const STATUS_LABEL: Record<JobJson["status"], string> = {
   uploaded: "Uploaded",
   transcribing: "Transcribing",
   transcribed: "Transcribed",
@@ -81,6 +85,28 @@ function ProgressBar({ percent }: { percent: number | null }) {
     </div>
   );
 }
+
+const EXPORT_STATUS_LABEL: Record<ClipExportJson["status"], string> = {
+  editing: "Editing",
+  rendering: "Rendering",
+  done: "Ready",
+  failed: "Failed",
+};
+
+const FORMAT_LABEL: Record<ExportFormat, string> = {
+  vertical: "Vertical 9:16",
+  original: "Original frame",
+};
+
+const captionLabel = ({ captions }: ClipExportJson) => {
+  if (!captions) return null;
+  if (!captions.enabled) return "no captions";
+  const font = CAPTION_FONTS.find((f) => f.id === captions.font)?.label;
+  const position = CAPTION_POSITIONS.find(
+    (p) => p.id === captions.position
+  )?.label.toLowerCase();
+  return `${font} captions, ${position}${captions.highlight ? ", word highlight" : ""}`;
+};
 
 function ExportResult({ entry }: { entry: ClipExportJson }) {
   const src = entry.status === "done" ? entry.url : null;
@@ -112,13 +138,15 @@ function ExportResult({ entry }: { entry: ClipExportJson }) {
           <Badge
             variant={entry.status === "failed" ? "destructive" : "secondary"}
           >
-            {entry.status}
+            {EXPORT_STATUS_LABEL[entry.status]}
           </Badge>
           <span className="text-muted-foreground text-xs">
-            {entry.format}
+            {FORMAT_LABEL[entry.format]}
             {entry.start !== null && entry.end !== null
               ? ` · ${clock(entry.start)}–${clock(entry.end)}`
               : null}
+            {captionLabel(entry) ? ` · ${captionLabel(entry)}` : null}
+            {entry.retentionName ? ` · over ${entry.retentionName}` : null}
           </span>
         </div>
         {entry.title ? <p className="font-medium">{entry.title}</p> : null}
@@ -170,9 +198,12 @@ export function JobView({
 }) {
   const api = useClipApi();
   const [job, setJob] = useState<JobJson | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [format, setFormat] = useState<ExportFormat>("vertical");
-  const [clipCount, setClipCount] = useClipCount();
+  const [settings, setSettings] = useClipSettings();
+  const [captions, setCaptions] = useCaptionOptions();
+  const [retentionId, setRetentionId] = useRetentionChoice();
   const [pending, startTransition] = useTransition();
   const video = useRef<HTMLVideoElement>(null);
   const stopAt = useRef<number | null>(null);
@@ -180,13 +211,15 @@ export function JobView({
   const load = useCallback(async () => {
     try {
       setJob(await api<JobJson>(`/api/clip-studio/jobs/${jobId}`));
+      setLoadError(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error));
+      setLoadError(error instanceof Error ? error.message : String(error));
     }
   }, [api, jobId]);
 
   useEffect(() => {
     setJob(null);
+    setLoadError(null);
     setPicked(new Set());
     void load();
   }, [jobId, load]);
@@ -233,7 +266,12 @@ export function JobView({
         clipIds.map((clipId) =>
           api(`/api/clip-studio/jobs/${jobId}/export`, {
             method: "POST",
-            body: JSON.stringify({ clipId, format }),
+            body: JSON.stringify({
+              clipId,
+              format,
+              captions,
+              retentionVideoId: format === "vertical" ? retentionId : null,
+            }),
           })
         )
       );
@@ -257,6 +295,21 @@ export function JobView({
     element.currentTime = start;
     stopAt.current = end;
     void element.play();
+  }
+
+  if (!job && loadError) {
+    return (
+      <Card role="alert" className="border-destructive/50">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span className="min-w-0">
+            Could not load this video: {loadError}
+          </span>
+          <Button size="sm" variant="outline" onClick={() => void load()}>
+            Try again
+          </Button>
+        </CardContent>
+      </Card>
+    );
   }
 
   if (!job) {
@@ -335,30 +388,32 @@ export function JobView({
             </p>
           ) : null}
 
+          {job.status === "uploaded" ||
+          job.status === "failed" ||
+          job.status === "transcribed" ||
+          job.status === "analyzed" ? (
+            <ClipSettingsFields
+              idPrefix="job"
+              value={settings}
+              onChange={setSettings}
+              disabled={pending}
+            />
+          ) : null}
+
           <div className="flex flex-wrap gap-2">
             {job.status === "uploaded" || job.status === "failed" ? (
               <Button
-                onClick={() => run("transcribe", { clipCount })}
+                onClick={() => run("transcribe", settings)}
                 disabled={pending}
               >
                 {pending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
                 {job.status === "failed" ? "Retry transcription" : "Transcribe"}
               </Button>
             ) : null}
-            {job.status === "uploaded" ||
-            job.status === "failed" ||
-            job.status === "transcribed" ||
-            job.status === "analyzed" ? (
-              <ClipCountSelect
-                value={clipCount}
-                onChange={setClipCount}
-                disabled={pending}
-              />
-            ) : null}
             {job.status === "transcribed" || job.status === "analyzed" ? (
               <Button
                 variant={job.status === "analyzed" ? "outline" : "default"}
-                onClick={() => run("analyze", { clipCount })}
+                onClick={() => run("analyze", settings)}
                 disabled={pending}
               >
                 {pending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
@@ -375,8 +430,8 @@ export function JobView({
             <CardTitle>Clips</CardTitle>
             <CardDescription>
               Pick the clips to export. The agent tightens each cut and writes
-              its title and caption, then it is rendered with captions burned
-              in.
+              its title and post text, then it is rendered the way you choose
+              below.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -443,6 +498,17 @@ export function JobView({
                 );
               })}
             </ul>
+            <CaptionSettings
+              value={captions}
+              onChange={setCaptions}
+              disabled={pending}
+            />
+            <RetentionSettings
+              value={retentionId}
+              onChange={setRetentionId}
+              available={format === "vertical"}
+              disabled={pending}
+            />
             <div className="flex flex-wrap items-center gap-2">
               <Select
                 value={format}

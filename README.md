@@ -1,6 +1,6 @@
 # Clipscript Studio
 
-Clipscript Studio runs on your own computer. Script Writer interviews you and drafts short-form video scripts. Clip Studio finds and renders short clips from a long video.
+Clipscript Studio runs on your own computer. Script Writer interviews you and drafts short-form video scripts. Clip Studio finds and renders short clips from a long video. You choose how many clips and how long, the caption font, whether captions sit high, in the middle or low, and whether the spoken word lights up. Vertical clips can also play over a muted retention video, such as gameplay you have the rights to post.
 
 It uses the ChatGPT plan you already have. You sign in with ChatGPT in your browser, and usage counts toward your plan. Your work stays in a folder on your computer, and the app only listens on `127.0.0.1`.
 

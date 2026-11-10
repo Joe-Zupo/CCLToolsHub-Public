@@ -1,16 +1,13 @@
 import { after } from "next/server";
 
-import { z } from "zod";
-
 import { jsonError } from "@/lib/api";
+import {
+  CLIP_SETTINGS_ERROR,
+  readClipSettings,
+} from "@/lib/clip-studio/clip-settings";
 import { blocked, claimAnalysis, preflight } from "@/lib/clip-studio/pipeline";
 import { readConfig } from "@/lib/clip-studio/store";
-import { MAX_CLIPS, MIN_CLIPS } from "@/lib/clip-studio/types";
 import { requireJob } from "@/lib/clip-studio/viewer";
-
-const bodySchema = z
-  .object({ clipCount: z.number().int().min(MIN_CLIPS).max(MAX_CLIPS) })
-  .partial();
 
 /** Asks the agent for clips again, for a transcribed job. */
 export async function POST(
@@ -23,16 +20,17 @@ export async function POST(
   if (!["transcribed", "analyzed"].includes(auth.job.status))
     return jsonError(409, "Transcribe the video first.");
 
-  const body = bodySchema.safeParse(await request.json().catch(() => ({})));
-  if (!body.success)
-    return jsonError(400, `Ask for ${MIN_CLIPS} to ${MAX_CLIPS} clips.`);
-  const clipCount = body.data.clipCount ?? auth.job.clipCount;
+  const settings = readClipSettings(
+    await request.json().catch(() => ({})),
+    auth.job
+  );
+  if (!settings) return jsonError(400, CLIP_SETTINGS_ERROR);
 
   const checks = await preflight(await readConfig(auth.owner), ["agent"]);
   const reason = blocked(checks);
   if (reason) return Response.json({ error: reason, checks }, { status: 412 });
 
-  const run = await claimAnalysis(auth.owner, id, clipCount);
+  const run = await claimAnalysis(auth.owner, id, settings);
   if (!run) return jsonError(409, "Clips are already being found.");
   after(run);
   return Response.json({ data: { started: true } }, { status: 202 });
