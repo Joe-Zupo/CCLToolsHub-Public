@@ -9,6 +9,8 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { retryBusy } from "@/lib/retry-busy";
+
 /**
  * Documents as JSON files, one folder per member, for running on this computer.
  * `pg-store.ts` is the same thing in Postgres for a deployment. The owner always comes from verified claims. Paths come from the page, so
@@ -83,7 +85,7 @@ export function createDocStore(root: string): DocStore {
       // A crash mid-write leaves the old file whole.
       const temp = `${file}.${randomUUID()}.tmp`;
       await writeFile(temp, JSON.stringify(data));
-      await rename(temp, file);
+      await retryBusy(() => rename(temp, file));
     },
 
     async remove(owner: Owner, path: string): Promise<void> {

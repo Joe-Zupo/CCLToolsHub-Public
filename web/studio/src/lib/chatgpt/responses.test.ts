@@ -121,6 +121,41 @@ describe("parseReply", () => {
 });
 
 describe("sampleJson", () => {
+  it("uses a listed model when the saved one is gone", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetcher = (async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/models"))
+        return new Response(
+          JSON.stringify({
+            models: [
+              { slug: "gpt-new", display_name: "New", visibility: "list" },
+            ],
+          })
+        );
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return reply('{"ok":true}');
+    }) as typeof fetch;
+    await sampleJson({
+      messages: [{ role: "user", content: "hello" }],
+      session: fakeSession(),
+      fetcher,
+    });
+    assert.equal(bodies[0]?.model, "gpt-new");
+  });
+
+  it("reports an error event sent during the stream", async () => {
+    const { result } = run([
+      sse([
+        {
+          type: "error",
+          code: "subscription_sharing_usage_limit_exceeded",
+          message: "Limit reached",
+        },
+      ]),
+    ]);
+    await assert.rejects(result, code("rate_limited"));
+  });
+
   it("sends the required fields and none of the unsupported ones", async () => {
     const { result, bodies, headers } = run([reply('{"ok":true}')]);
     assert.deepEqual(await result, { ok: true });

@@ -24,6 +24,9 @@ export const SCOPES = `openid profile email offline_access resource.invoke ${PLA
 
 export type Fetcher = typeof fetch;
 
+/** Token work runs one at a time, so one stalled request must not hold the rest. */
+export const requestTimeout = () => AbortSignal.timeout(30_000);
+
 export const randomToken = () => randomBytes(32).toString("base64url");
 
 export const pkceChallenge = (verifier: string) =>
@@ -105,6 +108,7 @@ export async function tokenRequest(
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(fields),
+    signal: requestTimeout(),
   });
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) throw new TokenError(errorCode(body), response.status);
@@ -144,7 +148,7 @@ export const refreshTokens = (
 type Discovery = { jwks_uri?: string; revocation_endpoint?: string };
 
 const discovery = async (fetcher: Fetcher): Promise<Discovery> => {
-  const response = await fetcher(DISCOVERY_URL);
+  const response = await fetcher(DISCOVERY_URL, { signal: requestTimeout() });
   if (!response.ok) throw new Error("Could not read OpenAI's sign-in details.");
   return (await response.json()) as Discovery;
 };
@@ -194,6 +198,7 @@ export async function revokeRefreshToken(
           token_type_hint: "refresh_token",
           client_id: grant.clientId,
         }),
+        signal: requestTimeout(),
       });
       if (response.ok) return true;
       if (response.status < 500) return false;

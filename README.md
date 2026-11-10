@@ -7,7 +7,6 @@ It uses the ChatGPT plan you already have. You sign in with ChatGPT in your brow
 ## What you need
 
 - Node.js 24 or newer
-- pnpm 11 (`npm install -g pnpm@11.19.0`)
 - Git
 - A ChatGPT Go, Plus or Pro plan
 - An AssemblyAI key, only for Clip Studio. ChatGPT plan access has no transcription, so Clip Studio uses AssemblyAI for that step.
@@ -17,20 +16,20 @@ It uses the ChatGPT plan you already have. You sign in with ChatGPT in your brow
 ```bash
 git clone https://github.com/Joe-Zupo/CCLToolsHub-Public.git
 cd CCLToolsHub-Public
-pnpm prepare-app
-pnpm start
+node scripts/studio.mjs prepare
+node scripts/studio.mjs start
 ```
 
 Open http://127.0.0.1:3006, go to Settings, and choose **Continue with ChatGPT**.
 
 ## Everyday commands
 
-| Command       | What it does                              |
-| ------------- | ----------------------------------------- |
-| `pnpm start`  | Starts the studio in the background       |
-| `pnpm stop`   | Stops it                                  |
-| `pnpm status` | Shows whether it is running and connected |
-| `pnpm update` | Pulls the newest code and rebuilds        |
+| Command                          | What it does                              |
+| -------------------------------- | ----------------------------------------- |
+| `node scripts/studio.mjs start`  | Starts the studio in the background       |
+| `node scripts/studio.mjs stop`   | Closes its database and stops it          |
+| `node scripts/studio.mjs status` | Shows whether it is running and connected |
+| `node scripts/studio.mjs update` | Pulls the newest code and rebuilds        |
 
 Your scripts, videos and sign-in stay in `.studio-data` through updates. Back up that folder if you move computers.
 
@@ -43,6 +42,8 @@ You can see each app's usage and set a weekly limit at https://chatgpt.com/setti
 Batch in Script Writer asks you to confirm before it drafts several scripts in a row.
 
 ## Development
+
+Development also needs pnpm 11.
 
 ```bash
 pnpm dev

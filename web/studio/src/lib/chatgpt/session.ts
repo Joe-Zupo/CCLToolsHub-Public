@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { dataFolder } from "@/lib/data-folder";
 import { installSecret } from "@/lib/install-secret";
+import { retryBusy } from "@/lib/retry-busy";
 import { createCipher } from "@/lib/script-writer/crypto";
 
 import {
@@ -91,12 +92,17 @@ export function createChatGptSession({
   const cipher = () => createCipher(installSecret(folder));
 
   const load = async (): Promise<Saved> => {
+    let stored: string;
     try {
-      const plain = cipher().decrypt(await readFile(file, "utf8"));
-      return plain ? (JSON.parse(plain) as Saved) : {};
-    } catch {
-      return {};
+      stored = await retryBusy(() => readFile(file, "utf8"));
+    } catch (error) {
+      // Only a missing file means no session. Any other failure must not be
+      // saved over the tokens and client id that are still there.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw error;
     }
+    const plain = cipher().decrypt(stored);
+    return plain ? (JSON.parse(plain) as Saved) : {};
   };
 
   const save = async (saved: Saved) => {
@@ -105,7 +111,7 @@ export function createChatGptSession({
     await writeFile(partial, cipher().encrypt(JSON.stringify(saved)), {
       mode: 0o600,
     });
-    await rename(partial, file);
+    await retryBusy(() => rename(partial, file));
   };
 
   // One change at a time, so a refresh's rotating token is never overwritten.

@@ -30,7 +30,7 @@ const run = (
   }
 ) =>
   new Promise<Ran>((resolve, reject) => {
-    const child = spawn(ffmpeg(), args, {
+    const child = spawn(/*turbopackIgnore: true*/ ffmpeg(), args, {
       cwd: options.cwd,
       env: options.env,
       windowsHide: true,

@@ -11,7 +11,13 @@ export {
 } from "./store-core";
 
 let opened: Promise<ClipStore> | undefined;
-const store = () => (opened ??= getDb().then(createClipStore));
+const store = () =>
+  (opened ??= getDb()
+    .then(createClipStore)
+    .catch((error: unknown) => {
+      opened = undefined;
+      throw error;
+    }));
 
 const lazy = <K extends keyof ClipStore>(name: K) =>
   (async (...args: unknown[]) => {

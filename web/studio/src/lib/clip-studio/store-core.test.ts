@@ -15,6 +15,7 @@ process.env.STUDIO_DATA = mkdtempSync(join(tmpdir(), "member-edition-"));
 
 const alice: Owner = { installationId: "inst_a", sub: "member_alice" };
 const bob: Owner = { installationId: "inst_a", sub: "member_bob" };
+const dana: Owner = { installationId: "inst_d", sub: "member_dana" };
 // Same member id in another community: a different person.
 const aliceElsewhere: Owner = { installationId: "inst_b", sub: "member_alice" };
 
@@ -36,6 +37,39 @@ const newJob = (owner: Owner, name: string) =>
     sourceUrl: `https://blob.example/${owner.sub}/${name}`,
     durationSec: 120,
   });
+
+describe("after the studio restarts", () => {
+  it("frees work that was running when it closed", async () => {
+    const { recoverInterrupted } = await import("./store-core");
+    const schema = await import("@/db/schema");
+    const db = drizzle(client, { schema });
+
+    const finding = await newJob(dana, "finding.mp4");
+    await store.updateJob(dana, finding.id, {
+      status: "analyzing",
+      progress: { stage: "analyzing", percent: null, message: "Finding clips" },
+    });
+    const exporting = await newJob(dana, "exporting.mp4");
+    await store.updateJob(dana, exporting.id, {
+      status: "analyzed",
+      progress: { stage: "rendering", percent: 40, message: "Rendering" },
+    });
+    await store.upsertExport(dana, exporting.id, "c1", "vertical", {
+      status: "rendering",
+    });
+
+    await recoverInterrupted(db);
+
+    const freed = await store.readJob(dana, finding.id);
+    assert.equal(freed?.status, "transcribed");
+    assert.equal(freed?.progress, null);
+    assert.match(freed?.error ?? "", /closed/);
+    const exported = await store.readJob(dana, exporting.id);
+    assert.equal(exported?.status, "analyzed");
+    assert.equal(exported?.progress, null);
+    assert.equal(exported?.exports[0]?.status, "failed");
+  });
+});
 
 describe("each member's Clip Studio data is their own", () => {
   it("keeps keys and settings per member, encrypted at rest", async () => {

@@ -1,4 +1,4 @@
-import { RESOURCE, type Fetcher } from "./oauth";
+import { requestTimeout, RESOURCE, type Fetcher } from "./oauth";
 import { chatGptSession, type ChatGptSession } from "./session";
 
 /**
@@ -139,6 +139,8 @@ const readError = async (response: Response): Promise<ApiError> => {
 type StreamEvent = {
   type?: string;
   delta?: string;
+  code?: string;
+  message?: string;
   response?: { error?: ApiError | null };
 };
 
@@ -191,6 +193,9 @@ async function collectText(body: ReadableStream<Uint8Array>): Promise<string> {
     else if (event.type === "response.failed") {
       const error = event.response?.error ?? {};
       throw new SampleError(pageCode(error), describe(error));
+    } else if (event.type === "error") {
+      const error = { code: event.code, message: event.message };
+      throw new SampleError(pageCode(error), describe(error));
     } else if (event.type === "response.incomplete")
       throw new SampleError("prompt_too_large", "The reply was cut short.");
   }
@@ -209,9 +214,11 @@ export async function listModels(
 ): Promise<Model[]> {
   const token = await session.token();
   const cached = modelCache.get(session);
-  if (cached && Date.now() - cached.at < MODELS_TTL_MS) return cached.models;
+  if (cached?.token === token && Date.now() - cached.at < MODELS_TTL_MS)
+    return cached.models;
   const response = await fetcher(`${RESOURCE}/models`, {
     headers: { Authorization: `Bearer ${token}` },
+    signal: requestTimeout(),
   });
   if (!response.ok) {
     const error = await readError(response);
@@ -225,6 +232,16 @@ export async function listModels(
     .map(({ slug, display_name }) => ({ slug, displayName: display_name }));
   modelCache.set(session, { token, at: Date.now(), models: listed });
   return listed;
+}
+
+/** The saved model, unless OpenAI no longer lists it for this account. */
+async function pickModel(session: ChatGptSession, fetcher: Fetcher) {
+  const saved = (await session.status()).model;
+  if (!saved) return (await listModels(session, fetcher))[0]?.slug;
+  const listed = await listModels(session, fetcher).catch(() => []);
+  return !listed.length || listed.some(({ slug }) => slug === saved)
+    ? saved
+    : listed[0]?.slug;
 }
 
 export async function sampleJson({
@@ -244,9 +261,7 @@ export async function sampleJson({
   const reasoning = effort ?? (modelTier === "complex" ? "high" : undefined);
 
   try {
-    const model =
-      (await session.status()).model ??
-      (await listModels(session, fetcher))[0]?.slug;
+    const model = await pickModel(session, fetcher);
     if (!model)
       throw new SampleError("no_key", "This account has no models to use.");
 

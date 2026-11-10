@@ -43,10 +43,17 @@ export function ChatGptConnection({ onChange }: { onChange?: () => void }) {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = useCallback(async () => {
-    const response = await fetch("/api/chatgpt/status");
-    if (response.ok) setConnection((await response.json()) as Connection);
+    setLoadFailed(false);
+    try {
+      const response = await fetch("/api/chatgpt/status");
+      if (!response.ok) throw new Error();
+      setConnection((await response.json()) as Connection);
+    } catch {
+      setLoadFailed(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -116,7 +123,14 @@ export function ChatGptConnection({ onChange }: { onChange?: () => void }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {!connection ? (
+        {!connection && loadFailed ? (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-sm">Couldn&apos;t check your connection.</p>
+            <Button variant="outline" onClick={() => void load()}>
+              Try again
+            </Button>
+          </div>
+        ) : !connection ? (
           <Loader2 className="text-muted-foreground size-4 animate-spin" />
         ) : connected ? (
           <>
@@ -129,7 +143,11 @@ export function ChatGptConnection({ onChange }: { onChange?: () => void }) {
                 <select
                   id="chatgpt-model"
                   className="border-input bg-background h-9 max-w-xs rounded-md border px-2 text-sm"
-                  value={connection.model ?? models[0]?.slug}
+                  value={
+                    models.some(({ slug }) => slug === connection.model)
+                      ? (connection.model as string)
+                      : models[0]?.slug
+                  }
                   onChange={(event) => void chooseModel(event.target.value)}
                 >
                   {models.map(({ slug, displayName }) => (

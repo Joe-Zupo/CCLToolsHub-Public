@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import * as schema from "@/db/schema";
@@ -56,6 +56,29 @@ export type JobPatch = Partial<
     | "clipCount"
   >
 >;
+
+/**
+ * Finding clips and exporting run in the server process and end with it, so
+ * when the database opens, nothing marked as running really is. Without this,
+ * a restart would leave those jobs waiting forever.
+ */
+export async function recoverInterrupted(db: ClipDb): Promise<void> {
+  const error = "The studio closed before this finished. Try again.";
+  await db
+    .update(clipStudioJobs)
+    .set({ status: "transcribed", progress: null, error })
+    .where(eq(clipStudioJobs.status, "analyzing"));
+  await db
+    .update(clipStudioExports)
+    .set({ status: "failed", error, updatedAt: new Date() })
+    .where(inArray(clipStudioExports.status, ["editing", "rendering"]));
+  await db
+    .update(clipStudioJobs)
+    .set({ progress: null })
+    .where(
+      sql`${clipStudioJobs.progress}->>'stage' in ('editing', 'rendering')`
+    );
+}
 
 export const configJson = (config: StoredConfig): ConfigJson => ({
   displayName: config.displayName,

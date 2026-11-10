@@ -25,6 +25,8 @@ const call = async <T>(
   const response = await fetch(`${BASE}${path}`, {
     ...init,
     headers: { authorization: apiKey, ...init.headers },
+    // A video can take hours to send. Everything else answers quickly.
+    signal: AbortSignal.timeout(path === "/upload" ? 4 * 3_600_000 : 60_000),
   });
   const json = (await response.json().catch(() => ({}))) as T & ApiError;
   if (!response.ok)

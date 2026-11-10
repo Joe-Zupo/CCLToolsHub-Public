@@ -4,6 +4,8 @@ packages:
 
 # Scripts run without reinstalling the workspace first.
 verifyDepsBeforeRun: false
+# Installs never stop to ask about removing old modules.
+confirmModulesPurge: false
 
 catalog:
   "@types/node": ^26.5.1

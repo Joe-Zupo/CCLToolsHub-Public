@@ -28,6 +28,8 @@ const data = join(root, ".studio-data");
 const pidFile = join(root, "studio.pid");
 const logFile = join(root, "studio.log");
 
+const STEP_LIMIT_MS = 20 * 60_000;
+
 const runEnv = () => ({ ...process.env, STUDIO_DATA: data });
 
 const fail = (message) => {
@@ -68,10 +70,14 @@ function savedPid() {
   }
 }
 
-/** A saved process that is alive and holding the port is the studio. */
-async function runningPid() {
-  const pid = savedPid();
-  return pid && (await portOpen()) ? pid : null;
+/** Asks whatever holds the port, so a reused process id can never pass. */
+async function isStudio() {
+  const response = await fetch(`${ADDRESS}/api/studio/health`, {
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => null);
+  if (!response?.ok) return false;
+  const body = await response.json().catch(() => null);
+  return body?.app === "clipscript-studio";
 }
 
 function run(command) {
@@ -80,18 +86,33 @@ function run(command) {
     env: runEnv(),
     stdio: "inherit",
     shell: true,
+    timeout: STEP_LIMIT_MS,
   });
+  if (result.error?.code === "ETIMEDOUT")
+    fail(`\`${command}\` stalled for 20 minutes, so it was stopped.`);
   if (result.status !== 0) fail(`\`${command}\` did not finish.`);
 }
 
+/** The pnpm already here, or npx when a global install was never possible. */
+function pnpmCommand() {
+  const found = spawnSync("pnpm --version", {
+    cwd: root,
+    stdio: "ignore",
+    shell: true,
+    timeout: 60_000,
+  });
+  return found.status === 0 ? "pnpm" : "npx --yes pnpm@11.19.0";
+}
+
 function prepare() {
-  run("pnpm install --frozen-lockfile");
-  run("pnpm build");
+  const pnpm = pnpmCommand();
+  run(`${pnpm} install --frozen-lockfile`);
+  run(`${pnpm} --filter @repo/studio build`);
   console.log("Clipscript Studio is ready to start.");
 }
 
 async function start() {
-  if (await runningPid()) {
+  if (await isStudio()) {
     console.log(`Already running at ${ADDRESS}`);
     return;
   }
@@ -125,17 +146,29 @@ async function start() {
       )
     : null;
   if (!response?.ok) {
-    await stop();
+    try {
+      process.kill(child.pid);
+    } catch {
+      // It has already exited.
+    }
+    rmSync(pidFile, { force: true });
     fail(`The studio did not start. Its log is at ${logFile}`);
   }
   console.log(`Running at ${ADDRESS}`);
 }
 
+/** Lets the app close its database, and kills it only if it does not exit. */
 async function stop() {
-  const pid = await runningPid();
-  if (pid) {
-    process.kill(pid);
-    await waitForPort(false, 15);
+  if (await isStudio()) {
+    await fetch(`${ADDRESS}/api/studio/shutdown`, {
+      method: "POST",
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null);
+    if (!(await waitForPort(false, 20))) {
+      const pid = savedPid();
+      if (pid) process.kill(pid);
+      await waitForPort(false, 15);
+    }
   }
   rmSync(pidFile, { force: true });
   console.log("Stopped.");
@@ -151,7 +184,7 @@ async function chatgptStatus() {
 }
 
 async function status() {
-  const running = Boolean(await runningPid());
+  const running = await isStudio();
   console.log(
     JSON.stringify(
       {
@@ -169,12 +202,15 @@ async function status() {
 }
 
 async function update() {
-  const wasRunning = Boolean(await runningPid());
+  const wasRunning = await isStudio();
   run("git pull --ff-only");
   if (wasRunning) await stop();
   prepare();
   if (wasRunning) await start();
 }
+
+if (Number(process.versions.node.split(".")[0]) < 24)
+  fail(`This app needs Node.js 24 or newer. This is ${process.version}.`);
 
 const commands = { prepare, start, stop, status, update };
 const command = commands[process.argv[2]];

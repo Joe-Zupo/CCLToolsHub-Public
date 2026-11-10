@@ -11,7 +11,7 @@
     "start": "node scripts/studio.mjs start",
     "stop": "node scripts/studio.mjs stop",
     "status": "node scripts/studio.mjs status",
-    "update": "node scripts/studio.mjs update",
+    "update-app": "node scripts/studio.mjs update",
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",
